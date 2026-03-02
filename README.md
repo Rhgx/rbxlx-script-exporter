@@ -38,7 +38,7 @@ Production output is generated in `dist/`.
 
 This project currently uses:
 
-- `vite.config.ts` -> `base: "/rbxmx-export/"`
+- `vite.config.ts` -> `base: "/rbxlx-script-exporter/"`
 
 If your repository name is different, update the `base` path to match your repo.
 For `username.github.io` root-site hosting, set `base: "/"`.
