@@ -2,8 +2,6 @@
 
 Static Vite web app that reads a Roblox `.rbxlx` / `.rbxmx` file in the browser, extracts `Script`, `LocalScript`, and `ModuleScript` source, and downloads a ZIP of exported `.lua` files.
 
-No backend is required; this is intended for static hosting (including GitHub Pages).
-
 ## Features
 
 - Client-side parsing of Roblox XML place/model files
