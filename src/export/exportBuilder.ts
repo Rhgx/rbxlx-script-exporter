@@ -155,6 +155,7 @@ export function buildExportPayload(
   const basePath = "";
   const files: ExportFile[] = [];
   const totalScripts = scripts.length;
+  const exportedAt = isoTimestamp();
 
   for (let i = 0; i < scripts.length; i += 1) {
     const inst = scripts[i];
@@ -162,7 +163,7 @@ export function buildExportPayload(
     const folderPath = getFolderPathForScript(inst, segByInst, root);
     const baseName = segByInst.get(inst) ?? sanitizePart(inst.name);
     const fileName = resolveUnique(folderPath, baseName, suffix);
-    const header = `-- Exported: ${isoTimestamp()}\n-- Source: ${getFullPath(inst, root)} [${inst.className}]\n\n`;
+    const header = `-- Exported: ${exportedAt}\n-- Source: ${getFullPath(inst, root)} [${inst.className}]\n\n`;
     const content = header + (inst.source || "-- No source\n");
     const relPath = folderPath ? `${folderPath}/${fileName}` : fileName;
     files.push({ path: relPath, content });

@@ -1,26 +1,13 @@
-import { parseRbxmx } from "./export/rbxmxParser";
-import { buildExportPayload } from "./export/exportBuilder";
-import { downloadExportZip } from "./export/zip";
+import { downloadZipBuffer } from "./export/zip";
+import type { ExportStage, ExportWorkerMessage } from "./export/workerTypes";
 
 const ACCEPT = ".rbxlx,.rbxmx";
+const WORKER_URL = new URL("./export/exportWorker.ts", import.meta.url);
 
-function tick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-type StageName = "read" | "parse" | "build" | "zip";
-
-function toMegabytes(bytes: number): string {
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function mapStageProgress(stage: StageName, stagePercent: number): number {
+function mapStageProgress(stage: ExportStage, stagePercent: number): number {
   const p = Math.max(0, Math.min(100, stagePercent));
-  if (stage === "read") {
-    return p * 0.2;
-  }
   if (stage === "parse") {
-    return 20 + p * 0.5;
+    return p * 0.7;
   }
   if (stage === "build") {
     return 70 + p * 0.2;
@@ -81,6 +68,7 @@ export function initApp(container: HTMLElement): void {
   const progressLabel = progressWrap.querySelector<HTMLElement>(".progress__label")!;
   const progressPercent = progressWrap.querySelector<HTMLElement>(".progress__percent")!;
   let lastProgressUiUpdate = 0;
+  let activeWorker: Worker | null = null;
 
   function setStatus(msg: string, isError = false): void {
     status.textContent = msg;
@@ -98,12 +86,7 @@ export function initApp(container: HTMLElement): void {
     progressPercent.textContent = `${clamped}%`;
   }
 
-  function setProgress(
-    stage: StageName,
-    stagePercent: number,
-    detail: string,
-    force = false
-  ): void {
+  function setProgress(stage: ExportStage, stagePercent: number, detail: string, force = false): void {
     const now = performance.now();
     if (!force && stagePercent < 100 && now - lastProgressUiUpdate < 24) {
       return;
@@ -119,78 +102,76 @@ export function initApp(container: HTMLElement): void {
     lastProgressUiUpdate = 0;
   }
 
+  function cleanupWorker(): void {
+    activeWorker?.terminate();
+    activeWorker = null;
+  }
+
+  function handleWorkerMessage(worker: Worker, message: ExportWorkerMessage): void {
+    if (worker !== activeWorker) {
+      return;
+    }
+
+    if (message.type === "progress") {
+      setProgress(message.stage, message.percent, message.detail);
+      if (message.stage === "parse") {
+        setStatus("Parsing XML tree...");
+      } else if (message.stage === "build") {
+        setStatus("Building export payload...");
+      } else {
+        setStatus("Compressing ZIP...");
+      }
+      return;
+    }
+
+    cleanupWorker();
+
+    if (message.type === "empty") {
+      setStatus("No scripts found in this file.", true);
+      return;
+    }
+
+    if (message.type === "error") {
+      setError(message.error);
+      setStatus("Export failed.", true);
+      return;
+    }
+
+    downloadZipBuffer(message.buffer, message.filename);
+    setProgress("zip", 100, `ZIP complete: ${message.filename}`, true);
+    setStatus(`Downloaded ZIP with ${message.fileCount} script(s).`);
+  }
+
   function processFile(file: File): void {
+    cleanupWorker();
     resetProgress();
     setError("");
-    setStatus(`Reading ${file.name}...`);
-    setProgress("read", 0, `Opening ${file.name}`);
-    const reader = new FileReader();
-    reader.onprogress = (event) => {
-      if (!event.lengthComputable) {
+    setStatus(`Preparing ${file.name}...`);
+    setProgress("parse", 0, `Queued ${file.name}`, true);
+
+    const worker = new Worker(WORKER_URL, { type: "module" });
+    activeWorker = worker;
+    worker.addEventListener("message", (event: MessageEvent<ExportWorkerMessage>) => {
+      handleWorkerMessage(worker, event.data);
+    });
+    worker.addEventListener("error", (event) => {
+      if (worker !== activeWorker) {
         return;
       }
-      const stagePercent = (event.loaded / event.total) * 100;
-      setProgress(
-        "read",
-        stagePercent,
-        `Reading bytes ${toMegabytes(event.loaded)} / ${toMegabytes(event.total)}`
-      );
-    };
-    reader.onload = async () => {
-      const text = reader.result as string;
-      try {
-        setProgress("read", 100, `Read complete: ${toMegabytes(file.size)}`, true);
-        await tick();
-
-        setStatus("Parsing XML tree...");
-        const { root, scripts } = parseRbxmx(text, (progress) => {
-          setProgress("parse", progress.percent, progress.detail);
-        });
-        setProgress("parse", 100, `Parse complete: ${scripts.length} script containers`, true);
-        await tick();
-
-        const placeName = file.name.replace(/\.(rbxlx|rbxmx)$/i, "") || "Place";
-        setStatus("Building export payload...");
-        const payload = buildExportPayload(root, scripts, placeName, (progress) => {
-          setProgress("build", progress.percent, progress.detail);
-        });
-        setProgress("build", 100, `Build complete: ${payload.files.length} output files`, true);
-        await tick();
-
-        if (payload.files.length === 0) {
-          setStatus("No scripts found in this file.", true);
-          return;
-        }
-
-        setStatus("Compressing ZIP...");
-        const zipName = `${placeName}-scripts`;
-        setProgress("zip", 0, `Creating ${zipName}.zip`, true);
-        downloadExportZip(payload, zipName, (percent) => {
-          setProgress("zip", percent, `Compressing ZIP: ${Math.round(percent)}%`);
-        })
-          .then(() => {
-            setProgress("zip", 100, `ZIP complete: ${zipName}.zip`, true);
-            setStatus(`Downloaded ZIP with ${payload.files.length} script(s).`);
-          })
-          .catch((err) => {
-            setError(String(err));
-            setStatus("Export failed.", true);
-          });
-      } catch (err) {
-        setError(String(err));
-        setStatus("Parse failed.", true);
-      }
-    };
-    reader.onerror = () => {
-      resetProgress();
-      setError("Failed to read file.");
-      setStatus("", true);
-    };
-    reader.readAsText(file, "utf-8");
+      cleanupWorker();
+      setError(event.message || "Worker execution failed.");
+      setStatus("Export failed.", true);
+    });
+    worker.postMessage({
+      type: "process",
+      file,
+    });
   }
 
   function onFile(files: FileList | null): void {
-    if (!files?.length) return;
+    if (!files?.length) {
+      return;
+    }
     const file = files[0];
     const ext = (file.name.split(".").pop() ?? "").toLowerCase();
     if (ext !== "rbxlx" && ext !== "rbxmx") {
@@ -207,7 +188,9 @@ export function initApp(container: HTMLElement): void {
   });
 
   dropZone.addEventListener("click", (e) => {
-    if ((e.target as HTMLElement).closest("label")) return;
+    if ((e.target as HTMLElement).closest("label")) {
+      return;
+    }
     fileInput.click();
   });
 

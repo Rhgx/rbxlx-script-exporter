@@ -2,14 +2,12 @@ import JSZip from "jszip";
 import type { ExportPayload } from "./types";
 
 /**
- * Build a ZIP blob from export payload and trigger browser download.
- * Files are placed under basePath inside the ZIP (e.g. RobloxExports/PlaceName/...).
+ * Build a ZIP buffer from export payload.
  */
-export async function downloadExportZip(
+export async function buildExportZipBuffer(
   payload: ExportPayload,
-  filename: string,
   onProgress?: (percent: number) => void
-): Promise<void> {
+): Promise<Uint8Array> {
   const zip = new JSZip();
   const folder = payload.basePath ? zip.folder(payload.basePath) : zip;
   if (!folder) {
@@ -18,12 +16,19 @@ export async function downloadExportZip(
   for (const f of payload.files) {
     folder.file(f.path, f.content, { unixPermissions: 0o644 });
   }
-  const blob = await zip.generateAsync(
-    { type: "blob" },
+  return zip.generateAsync(
+    { type: "uint8array" },
     (metadata) => {
       onProgress?.(metadata.percent);
     }
   );
+}
+
+/**
+ * Trigger a browser download for an already-generated ZIP buffer.
+ */
+export function downloadZipBuffer(buffer: ArrayBuffer, filename: string): void {
+  const blob = new Blob([buffer], { type: "application/zip" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

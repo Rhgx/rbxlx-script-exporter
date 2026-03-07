@@ -5,6 +5,8 @@ Static Vite web app that reads a Roblox `.rbxlx` / `.rbxmx` file in the browser,
 ## Features
 
 - Client-side parsing of Roblox XML place/model files
+- Streaming XML parsing to avoid building a browser DOM for large files
+- Worker-based parse/build/ZIP pipeline so the UI stays responsive
 - Script extraction with Roblox-style suffixes:
   - `Script` -> `.server.lua`
   - `LocalScript` -> `.client.lua`
@@ -44,7 +46,7 @@ For `username.github.io` root-site hosting, set `base: "/"`.
 ## Notes
 
 - Exported files are written directly at ZIP root.
-- Large files are supported but may take time depending on browser memory/CPU.
+- Large files are still bounded by browser memory/CPU, but parsing and ZIP work now run off the main thread.
 
 ## License
 

@@ -1,3 +1,4 @@
+import { SaxesParser, type SaxesTagPlain } from "saxes";
 import type { ParsedInstance } from "./types";
 
 const LUA_CLASSES = new Set(["Script", "LocalScript", "ModuleScript"]);
@@ -7,115 +8,49 @@ export interface ParseProgress {
   detail: string;
 }
 
-function makePath(node: ParsedInstance): string {
-  const parts: string[] = [node.name];
-  let p = node.parent;
-  while (p && p.parent) {
-    parts.unshift(p.name);
-    p = p.parent;
-  }
-  return `game.${parts.join(".")}`;
+interface PropertyCapture {
+  field: "name" | "source";
+  tagName: string;
+  target: ParsedInstance;
+  chunks: string[];
 }
 
-function getPropText(properties: Element, propName: string): string {
-  for (const child of properties.children) {
-    if (child.getAttribute("name") === propName) {
-      const text = child.textContent ?? "";
-      return text;
-    }
-  }
-  return "";
+function getTagAttribute(tag: SaxesTagPlain, name: string): string {
+  const value = tag.attributes[name];
+  return typeof value === "string" ? value : "";
 }
 
-function parseItem(
-  itemEl: Element,
-  parent: ParsedInstance | null,
-  ctx?: {
-    totalItems: number;
-    parsedItems: number;
-    onProgress?: (progress: ParseProgress) => void;
-  }
-): ParsedInstance {
-  const className = itemEl.getAttribute("class") ?? "Unknown";
-  const referent = itemEl.getAttribute("referent") ?? undefined;
-
-  let propertiesEl: Element | null = null;
-  const childItems: Element[] = [];
-  for (const el of itemEl.children) {
-    if (el.tagName === "Properties") {
-      propertiesEl = el;
-    } else if (el.tagName === "Item") {
-      childItems.push(el);
-    }
-  }
-
-  const name = propertiesEl ? getPropText(propertiesEl, "Name") : "";
-  let source = "";
-  if (LUA_CLASSES.has(className) && propertiesEl) {
-    source = getPropText(propertiesEl, "Source");
-  }
-
-  const instance: ParsedInstance = {
-    className,
-    name: name || "(unnamed)",
-    source,
-    parent,
-    children: [],
-    referent,
-  };
-  if (ctx) {
-    ctx.parsedItems += 1;
-    ctx.onProgress?.({
-      percent: (ctx.parsedItems / ctx.totalItems) * 100,
-      detail: `Parsing ${ctx.parsedItems}/${ctx.totalItems}: ${instance.className} ${makePath(instance)}`,
-    });
-  }
-
-  for (const childEl of childItems) {
-    instance.children.push(parseItem(childEl, instance, ctx));
-  }
-
-  return instance;
+function isLuaClass(className: string): boolean {
+  return LUA_CLASSES.has(className);
 }
 
-/** Collect all instances that are Script, LocalScript, or ModuleScript (depth-first). */
-function collectScripts(root: ParsedInstance): ParsedInstance[] {
-  const out: ParsedInstance[] = [];
-  function visit(node: ParsedInstance) {
-    if (LUA_CLASSES.has(node.className)) {
-      out.push(node);
-    }
-    for (const c of node.children) {
-      visit(c);
-    }
+function reportChunkProgress(
+  onProgress: ((progress: ParseProgress) => void) | undefined,
+  loadedBytes: number,
+  totalBytes: number,
+  parsedItems: number,
+  scriptCount: number,
+  force = false
+): void {
+  if (!onProgress) {
+    return;
   }
-  visit(root);
-  return out;
+  const percent = totalBytes > 0 ? (loadedBytes / totalBytes) * 100 : 100;
+  const detail = `Parsing ${parsedItems} items, found ${scriptCount} scripts`;
+  onProgress({
+    percent: force ? 100 : Math.min(99.9, percent),
+    detail,
+  });
 }
 
 /**
- * Parse rbxlx (or rbxmx) XML string and return the root instance plus list of all script instances.
- * Root is a synthetic "game" node that parents all top-level Item elements.
+ * Stream-parse rbxlx/rbxmx XML and return the exporter tree plus the discovered scripts.
+ * This avoids constructing a browser DOM before building the exporter tree.
  */
-export function parseRbxmx(
-  xml: string,
+export async function parseRbxmxFile(
+  file: Blob,
   onProgress?: (progress: ParseProgress) => void
-): { root: ParsedInstance; scripts: ParsedInstance[] } {
-  const doc = new DOMParser().parseFromString(xml, "text/xml");
-  const roblox = doc.querySelector("roblox");
-  if (!roblox) {
-    throw new Error("Invalid rbxlx: no roblox root element");
-  }
-
-  const itemEls = Array.from(roblox.children).filter((el) => el.tagName === "Item");
-  if (itemEls.length === 0) {
-    throw new Error("Invalid rbxlx: no Item elements");
-  }
-
-  const totalItems = Math.max(1, roblox.getElementsByTagName("Item").length);
-  const ctx = { totalItems, parsedItems: 0, onProgress };
-
-  // Synthetic game root so we can preserve all top-level services/items.
+): Promise<{ root: ParsedInstance; scripts: ParsedInstance[] }> {
   const root: ParsedInstance = {
     className: "DataModel",
     name: "game",
@@ -123,14 +58,131 @@ export function parseRbxmx(
     parent: null,
     children: [],
   };
-  for (const itemEl of itemEls) {
-    root.children.push(parseItem(itemEl, root, ctx));
-  }
-  onProgress?.({
-    percent: 100,
-    detail: `Parsing complete: ${ctx.parsedItems} items`,
+  const scripts: ParsedInstance[] = [];
+  const itemStack: ParsedInstance[] = [];
+  let currentPropertiesItem: ParsedInstance | null = null;
+  let propertyCapture: PropertyCapture | null = null;
+  let hasRobloxRoot = false;
+  let parsedItems = 0;
+
+  const parser = new SaxesParser({ xmlns: false, position: false });
+  parser.on("opentag", (tag) => {
+    if (tag.name === "roblox") {
+      hasRobloxRoot = true;
+      return;
+    }
+
+    if (tag.name === "Item") {
+      const parent = itemStack[itemStack.length - 1] ?? root;
+      const instance: ParsedInstance = {
+        className: getTagAttribute(tag, "class") || "Unknown",
+        name: "(unnamed)",
+        source: "",
+        parent,
+        children: [],
+        referent: getTagAttribute(tag, "referent") || undefined,
+      };
+      parent.children.push(instance);
+      itemStack.push(instance);
+      parsedItems += 1;
+      if (isLuaClass(instance.className)) {
+        scripts.push(instance);
+      }
+      return;
+    }
+
+    if (tag.name === "Properties") {
+      currentPropertiesItem = itemStack[itemStack.length - 1] ?? null;
+      return;
+    }
+
+    if (!currentPropertiesItem) {
+      return;
+    }
+
+    const propertyName = getTagAttribute(tag, "name");
+    if (propertyName === "Name") {
+      propertyCapture = {
+        field: "name",
+        tagName: tag.name,
+        target: currentPropertiesItem,
+        chunks: [],
+      };
+      return;
+    }
+
+    if (propertyName === "Source" && isLuaClass(currentPropertiesItem.className)) {
+      propertyCapture = {
+        field: "source",
+        tagName: tag.name,
+        target: currentPropertiesItem,
+        chunks: [],
+      };
+    }
   });
 
-  const scripts = collectScripts(root);
+  parser.on("text", (text) => {
+    propertyCapture?.chunks.push(text);
+  });
+
+  parser.on("cdata", (text) => {
+    propertyCapture?.chunks.push(text);
+  });
+
+  parser.on("closetag", (tag) => {
+    if (propertyCapture && propertyCapture.tagName === tag.name) {
+      const value = propertyCapture.chunks.join("");
+      if (propertyCapture.field === "name") {
+        propertyCapture.target.name = value || "(unnamed)";
+      } else {
+        propertyCapture.target.source = value;
+      }
+      propertyCapture = null;
+      return;
+    }
+
+    if (tag.name === "Properties") {
+      currentPropertiesItem = null;
+      return;
+    }
+
+    if (tag.name === "Item") {
+      itemStack.pop();
+    }
+  });
+
+  const reader = file.stream().getReader();
+  const decoder = new TextDecoder("utf-8");
+  let loadedBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      loadedBytes += value.byteLength;
+      parser.write(decoder.decode(value, { stream: true }));
+      reportChunkProgress(onProgress, loadedBytes, file.size, parsedItems, scripts.length);
+    }
+
+    const finalChunk = decoder.decode();
+    if (finalChunk) {
+      parser.write(finalChunk);
+    }
+    parser.close();
+  } catch (err) {
+    await reader.cancel();
+    throw err;
+  }
+
+  if (!hasRobloxRoot) {
+    throw new Error("Invalid rbxlx: no roblox root element");
+  }
+  if (root.children.length === 0) {
+    throw new Error("Invalid rbxlx: no Item elements");
+  }
+
+  reportChunkProgress(onProgress, file.size, file.size, parsedItems, scripts.length, true);
   return { root, scripts };
 }

@@ -1,1 +1,1 @@
-{"root":["./src/app.ts","./src/main.ts","./src/vite-env.d.ts","./src/export/exportbuilder.ts","./src/export/rbxmxparser.ts","./src/export/types.ts","./src/export/zip.ts"],"version":"5.6.3"}
+{"root":["./src/app.ts","./src/main.ts","./src/vite-env.d.ts","./src/export/exportbuilder.ts","./src/export/exportworker.ts","./src/export/rbxmxparser.ts","./src/export/types.ts","./src/export/workertypes.ts","./src/export/zip.ts"],"version":"5.6.3"}
