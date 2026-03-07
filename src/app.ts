@@ -3,6 +3,14 @@ import type { ExportStage, ExportWorkerMessage } from "./export/workerTypes";
 
 const ACCEPT = ".rbxlx,.rbxmx";
 
+function logDebug(message: string, data?: unknown): void {
+  if (data === undefined) {
+    console.debug("[rbxlx-export]", message);
+    return;
+  }
+  console.debug("[rbxlx-export]", message, data);
+}
+
 function mapStageProgress(stage: ExportStage, stagePercent: number): number {
   const p = Math.max(0, Math.min(100, stagePercent));
   if (stage === "parse") {
@@ -102,6 +110,7 @@ export function initApp(container: HTMLElement): void {
   }
 
   function cleanupWorker(): void {
+    logDebug("Cleaning up worker");
     activeWorker?.terminate();
     activeWorker = null;
   }
@@ -111,7 +120,16 @@ export function initApp(container: HTMLElement): void {
       return;
     }
 
+    if (message.type === "debug") {
+      logDebug(`Worker: ${message.detail}`, message.data);
+      return;
+    }
+
     if (message.type === "progress") {
+      logDebug(`Worker progress: ${message.stage}`, {
+        percent: message.percent,
+        detail: message.detail,
+      });
       setProgress(message.stage, message.percent, message.detail);
       if (message.stage === "parse") {
         setStatus("Parsing XML tree...");
@@ -126,16 +144,23 @@ export function initApp(container: HTMLElement): void {
     cleanupWorker();
 
     if (message.type === "empty") {
+      logDebug("Worker completed with no scripts");
       setStatus("No scripts found in this file.", true);
       return;
     }
 
     if (message.type === "error") {
+      logDebug("Worker reported error", message.error);
       setError(message.error);
       setStatus("Export failed.", true);
       return;
     }
 
+    logDebug("Worker completed successfully", {
+      filename: message.filename,
+      fileCount: message.fileCount,
+      bytes: message.buffer.byteLength,
+    });
     downloadZipBuffer(message.buffer, message.filename);
     setProgress("zip", 100, `ZIP complete: ${message.filename}`, true);
     setStatus(`Downloaded ZIP with ${message.fileCount} script(s).`);
@@ -147,6 +172,14 @@ export function initApp(container: HTMLElement): void {
     setError("");
     setStatus(`Preparing ${file.name}...`);
     setProgress("parse", 0, `Queued ${file.name}`, true);
+    logDebug("Starting export", {
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type,
+      workerUrl: new URL("./export/exportWorker.ts", import.meta.url).toString(),
+      locationHref: window.location.href,
+      userAgent: navigator.userAgent,
+    });
 
     const worker = new Worker(new URL("./export/exportWorker.ts", import.meta.url), {
       type: "module",
@@ -159,10 +192,23 @@ export function initApp(container: HTMLElement): void {
       if (worker !== activeWorker) {
         return;
       }
+      logDebug("Worker error event", {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+      });
       cleanupWorker();
       setError(event.message || "Worker execution failed.");
       setStatus("Export failed.", true);
     });
+    worker.addEventListener("messageerror", (event) => {
+      if (worker !== activeWorker) {
+        return;
+      }
+      logDebug("Worker messageerror event", event);
+    });
+    logDebug("Posting file to worker");
     worker.postMessage({
       type: "process",
       file,

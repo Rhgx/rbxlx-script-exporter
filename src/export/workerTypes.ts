@@ -12,6 +12,12 @@ export interface ExportWorkerProgressMessage {
   detail: string;
 }
 
+export interface ExportWorkerDebugMessage {
+  type: "debug";
+  detail: string;
+  data?: unknown;
+}
+
 export interface ExportWorkerCompleteMessage {
   type: "complete";
   fileCount: number;
@@ -29,6 +35,7 @@ export interface ExportWorkerErrorMessage {
 }
 
 export type ExportWorkerMessage =
+  | ExportWorkerDebugMessage
   | ExportWorkerProgressMessage
   | ExportWorkerCompleteMessage
   | ExportWorkerEmptyMessage
