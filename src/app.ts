@@ -2,7 +2,6 @@ import { downloadZipBuffer } from "./export/zip";
 import type { ExportStage, ExportWorkerMessage } from "./export/workerTypes";
 
 const ACCEPT = ".rbxlx,.rbxmx";
-const WORKER_URL = new URL("./export/exportWorker.ts", import.meta.url);
 
 function mapStageProgress(stage: ExportStage, stagePercent: number): number {
   const p = Math.max(0, Math.min(100, stagePercent));
@@ -149,7 +148,9 @@ export function initApp(container: HTMLElement): void {
     setStatus(`Preparing ${file.name}...`);
     setProgress("parse", 0, `Queued ${file.name}`, true);
 
-    const worker = new Worker(WORKER_URL, { type: "module" });
+    const worker = new Worker(new URL("./export/exportWorker.ts", import.meta.url), {
+      type: "module",
+    });
     activeWorker = worker;
     worker.addEventListener("message", (event: MessageEvent<ExportWorkerMessage>) => {
       handleWorkerMessage(worker, event.data);
